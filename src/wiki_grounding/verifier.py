@@ -197,15 +197,28 @@ class ClaimVerifier:
 
     def _ground_entity(self, mention: str) -> Optional[EntityProfile]:
         """Ground a mention to an entity."""
-        # Try exact match first
-        results = self.store.search_exact(mention, limit=5)
-        if results:
-            return results[0]
+        # Normalize: strip articles and clean
+        normalized = mention.strip()
+        for article in ["the ", "a ", "an ", "The ", "A ", "An "]:
+            if normalized.startswith(article):
+                normalized = normalized[len(article):]
+                break
 
-        # Try fuzzy match
-        results = self.store.search(mention, limit=5)
-        if results:
-            return results[0]
+        # Try variations in order of preference
+        variations = [mention, normalized, normalized.title()]
+        if mention != normalized:
+            variations = [normalized, normalized.title(), mention]
+
+        for variant in variations:
+            # Try exact match first
+            results = self.store.search_exact(variant, limit=5)
+            if results:
+                return results[0]
+
+            # Try fuzzy match
+            results = self.store.search(variant, limit=5)
+            if results:
+                return results[0]
 
         return None
 
