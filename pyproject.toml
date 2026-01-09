@@ -1,0 +1,65 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "sparse-wiki-grounding"
+version = "0.1.0"
+description = "Interpretable entity grounding for claim verification"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+authors = [
+    { name = "Rohan Vinaik" }
+]
+keywords = [
+    "nlp",
+    "knowledge-graph",
+    "claim-verification",
+    "hallucination-detection",
+    "ai-safety",
+    "entity-linking",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = []  # No dependencies! Pure Python + stdlib sqlite3
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov",
+    "ruff",
+]
+demo = [
+    "rich",  # For pretty printing
+]
+
+[project.urls]
+Homepage = "https://github.com/rohan-vinaik/sparse-wiki-grounding"
+Repository = "https://github.com/rohan-vinaik/sparse-wiki-grounding"
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "/src",
+    "/data/entities_demo.db",
+    "/data/schema.sql",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/wiki_grounding"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
