@@ -1,0 +1,55 @@
+{
+  "accuracy": 0.5,
+  "mean_latency_ms": 1.1879443288004647,
+  "n_claims": 6,
+  "results": [
+    {
+      "claim": "Paris is the capital of France.",
+      "truth": true,
+      "score": 0.3,
+      "verdict": false,
+      "latency_ms": 1.2459999998100102,
+      "grounding": 0.3
+    },
+    {
+      "claim": "Water freezes at 0 degrees Celsius.",
+      "truth": true,
+      "score": 0.0,
+      "verdict": false,
+      "latency_ms": 0.20724997739307582,
+      "grounding": 0.0
+    },
+    {
+      "claim": "Einstein developed the theory of relativity.",
+      "truth": true,
+      "score": 0.4,
+      "verdict": false,
+      "latency_ms": 2.4166250077541918,
+      "grounding": 0.4
+    },
+    {
+      "claim": "Paris is the capital of Germany.",
+      "truth": false,
+      "score": 0.3,
+      "verdict": false,
+      "latency_ms": 0.4665409796871245,
+      "grounding": 0.3
+    },
+    {
+      "claim": "Water freezes at 50 degrees Celsius.",
+      "truth": false,
+      "score": 0.0,
+      "verdict": false,
+      "latency_ms": 0.011583993909880519,
+      "grounding": 0.0
+    },
+    {
+      "claim": "Einstein invented the telephone.",
+      "truth": false,
+      "score": 0.4,
+      "verdict": false,
+      "latency_ms": 2.7796660142485052,
+      "grounding": 0.4
+    }
+  ]
+}
