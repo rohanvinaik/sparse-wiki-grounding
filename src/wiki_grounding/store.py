@@ -271,3 +271,167 @@ class EntityStore:
             (entity_id,)
         ).fetchall()
         return {row["key"]: row["value"] for row in rows}
+
+    # =========================================================================
+    # Zero State Queries (Dimension Tree Roots)
+    # =========================================================================
+
+    def get_zero_state(self, dimension: str) -> Optional[str]:
+        """
+        Get the zero state (root node) for a dimension tree.
+
+        Args:
+            dimension: SPATIAL, TEMPORAL, TAXONOMIC, SCALE, or DOMAIN
+
+        Returns:
+            Zero state node name (e.g., "Earth" for SPATIAL) or None
+        """
+        row = self.conn.execute(
+            "SELECT zero_node FROM zero_states WHERE dimension = ?",
+            (dimension,)
+        ).fetchone()
+        return row["zero_node"] if row else None
+
+    def get_all_zero_states(self) -> dict:
+        """
+        Get all zero states as a dimension -> zero_node mapping.
+
+        Returns:
+            Dict like {"SPATIAL": "Earth", "TEMPORAL": "Present", ...}
+        """
+        rows = self.conn.execute("SELECT dimension, zero_node FROM zero_states").fetchall()
+        return {row["dimension"]: row["zero_node"] for row in rows}
+
+    # =========================================================================
+    # Anchor Layer Queries (Cross-Node Connectivity)
+    # =========================================================================
+
+    def get_entity_anchors(
+        self, entity_id: str
+    ) -> List[Tuple[int, str, Optional[str], float]]:
+        """
+        Get all semantic anchors for an entity.
+
+        This is the core of the cross-node connectivity layer - each anchor
+        represents a semantic label that can connect entities across the graph.
+
+        Args:
+            entity_id: Source entity
+
+        Returns:
+            List of (anchor_id, label, category, weight) tuples
+            Categories: SCOPE, HISTORY, KNOWN_FOR, GEOGRAPHY
+        """
+        rows = self.conn.execute("""
+            SELECT ad.anchor_id, ad.label, ad.category, ea.weight
+            FROM entity_anchors ea
+            JOIN anchor_dictionary ad ON ea.anchor_id = ad.anchor_id
+            WHERE ea.entity_id = ?
+            ORDER BY ea.weight DESC
+        """, (entity_id,)).fetchall()
+
+        return [(row["anchor_id"], row["label"], row["category"], row["weight"])
+                for row in rows]
+
+    def get_entities_with_anchor(
+        self, anchor_id: int, limit: int = 100
+    ) -> List[Tuple[str, float]]:
+        """
+        Find all entities that share a semantic anchor.
+
+        This enables cross-node spreading activation - entities connected
+        through shared semantic anchors even without direct entity_links.
+
+        Args:
+            anchor_id: Anchor ID from anchor_dictionary
+            limit: Maximum results
+
+        Returns:
+            List of (entity_id, weight) tuples
+        """
+        rows = self.conn.execute("""
+            SELECT entity_id, weight
+            FROM entity_anchors
+            WHERE anchor_id = ?
+            ORDER BY weight DESC
+            LIMIT ?
+        """, (anchor_id, limit)).fetchall()
+
+        return [(row["entity_id"], row["weight"]) for row in rows]
+
+    def get_anchor_by_label(self, label: str) -> Optional[Tuple[int, str, Optional[str]]]:
+        """
+        Look up an anchor by its label.
+
+        Args:
+            label: Anchor label (case-insensitive)
+
+        Returns:
+            (anchor_id, label, category) or None
+        """
+        row = self.conn.execute("""
+            SELECT anchor_id, label, category
+            FROM anchor_dictionary
+            WHERE LOWER(label) = LOWER(?)
+        """, (label,)).fetchone()
+
+        if row:
+            return (row["anchor_id"], row["label"], row["category"])
+        return None
+
+    def get_anchors_by_category(
+        self, category: str, limit: int = 100
+    ) -> List[Tuple[int, str]]:
+        """
+        Get all anchors in a category.
+
+        Categories represent semantic banks:
+        - SCOPE: General topical scope
+        - HISTORY: Historical/temporal associations
+        - KNOWN_FOR: Notable achievements/attributes
+        - GEOGRAPHY: Geographic associations
+
+        Args:
+            category: SCOPE, HISTORY, KNOWN_FOR, or GEOGRAPHY
+            limit: Maximum results
+
+        Returns:
+            List of (anchor_id, label) tuples
+        """
+        rows = self.conn.execute("""
+            SELECT anchor_id, label
+            FROM anchor_dictionary
+            WHERE category = ?
+            LIMIT ?
+        """, (category, limit)).fetchall()
+
+        return [(row["anchor_id"], row["label"]) for row in rows]
+
+    def count_anchors(self) -> int:
+        """Count total anchor dictionary entries."""
+        return self.conn.execute(
+            "SELECT COUNT(*) FROM anchor_dictionary"
+        ).fetchone()[0]
+
+    def count_anchor_links(self) -> int:
+        """Count total entity-anchor links."""
+        return self.conn.execute(
+            "SELECT COUNT(*) FROM entity_anchors"
+        ).fetchone()[0]
+
+    def anchor_stats(self) -> dict:
+        """Get statistics about the anchor layer."""
+        stats = {
+            "anchor_dictionary": self.count_anchors(),
+            "entity_anchor_links": self.count_anchor_links(),
+        }
+
+        # Category breakdown
+        rows = self.conn.execute("""
+            SELECT category, COUNT(*) as cnt
+            FROM anchor_dictionary
+            GROUP BY category
+        """).fetchall()
+        stats["by_category"] = {row["category"]: row["cnt"] for row in rows}
+
+        return stats

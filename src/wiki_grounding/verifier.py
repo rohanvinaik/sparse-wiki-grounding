@@ -82,16 +82,16 @@ RELATION_PATTERNS = {
     ],
 }
 
-# Relation type mappings
+# Relation type mappings (includes ConceptNet-style relations)
 CLAIM_TO_RELATIONS = {
-    "created": ["creator_of", "created", "invented"],
-    "wrote": ["author_of", "wrote"],
-    "invented": ["inventor_of", "invented", "created"],
-    "discovered": ["discoverer_of", "discovered"],
-    "founded": ["founder_of", "founded"],
-    "built": ["builder_of", "built", "constructed"],
-    "capital": ["capital_of"],
-    "located": ["located_in", "part_of"],
+    "created": ["creator_of", "created", "invented", "RelatedTo"],
+    "wrote": ["author_of", "wrote", "RelatedTo"],
+    "invented": ["inventor_of", "invented", "created", "RelatedTo"],
+    "discovered": ["discoverer_of", "discovered", "RelatedTo"],
+    "founded": ["founder_of", "founded", "RelatedTo"],
+    "built": ["builder_of", "built", "constructed", "RelatedTo"],
+    "capital": ["capital_of", "AtLocation", "PartOf"],
+    "located": ["located_in", "part_of", "AtLocation", "PartOf"],
 }
 
 
@@ -297,50 +297,46 @@ class ClaimVerifier:
         object_str: str,
         object_entity: Optional[EntityProfile]
     ) -> VerificationResult:
-        """Verify location claims using SPATIAL dimension."""
-        # Check SPATIAL position
+        """
+        Verify location claims using SPATIAL dimension hierarchy.
+
+        Uses the is_descendant_of method for hierarchical verification:
+        - "Paris is in Europe" -> Paris.is_descendant_of("Europe", SPATIAL) -> True
+        - "Paris is in London" -> Paris.is_descendant_of("London", SPATIAL) -> False
+        """
+        # Use hierarchical navigation for location verification
+        if subject.is_descendant_of(object_str, GroundingDimension.SPATIAL):
+            spatial_pos = subject.get_position(GroundingDimension.SPATIAL)
+            return VerificationResult(
+                claim=claim,
+                status=VerificationStatus.SUPPORTED,
+                claim_type=ClaimType.LOCATION,
+                confidence=0.95,
+                subject_entity=subject,
+                object_entity=object_entity,
+                supporting_evidence=[
+                    f"SPATIAL hierarchy: {' > '.join(subject.navigate_from_zero(GroundingDimension.SPATIAL))}"
+                ] if spatial_pos else [],
+            )
+
+        # Check SPATIAL position for contradictions
         spatial_pos = subject.get_position(GroundingDimension.SPATIAL)
-
         if spatial_pos:
-            # Check if claimed location is in path
-            path_lower = [n.lower() for n in spatial_pos.path_nodes]
-            if object_str.lower() in path_lower:
-                return VerificationResult(
-                    claim=claim,
-                    status=VerificationStatus.SUPPORTED,
-                    claim_type=ClaimType.LOCATION,
-                    confidence=0.95,
-                    subject_entity=subject,
-                    object_entity=object_entity,
-                    supporting_evidence=[f"SPATIAL: {spatial_pos.formatted}"],
-                )
-
-            # Check if object is in the path (partial match)
-            for node in spatial_pos.path_nodes:
-                if object_str.lower() in node.lower() or node.lower() in object_str.lower():
-                    return VerificationResult(
-                        claim=claim,
-                        status=VerificationStatus.SUPPORTED,
-                        claim_type=ClaimType.LOCATION,
-                        confidence=0.8,
-                        subject_entity=subject,
-                        object_entity=object_entity,
-                        supporting_evidence=[f"SPATIAL: {spatial_pos.formatted}"],
-                    )
-
-            # Contradiction: has spatial info but doesn't match
+            # Has spatial info but claimed location not in path -> contradiction
             return VerificationResult(
                 claim=claim,
                 status=VerificationStatus.CONTRADICTED,
                 claim_type=ClaimType.LOCATION,
-                confidence=0.7,
+                confidence=0.8,
                 subject_entity=subject,
                 object_entity=object_entity,
-                contradicting_evidence=[f"SPATIAL: {spatial_pos.formatted}"],
-                correction=f"{subject.entity.label} is located in {'/'.join(spatial_pos.path_nodes[-3:])}",
+                contradicting_evidence=[
+                    f"SPATIAL hierarchy: {' > '.join(spatial_pos.path_nodes)}"
+                ],
+                correction=f"{subject.entity.label} is located in {' > '.join(spatial_pos.path_nodes[-3:])}",
             )
 
-        # No spatial info - check relations
+        # No spatial info - check entity relations
         related = self.store.get_related(subject.entity.id, limit=50)
         for profile, rel, weight in related:
             if "located" in rel.lower() or "part_of" in rel.lower():
@@ -354,6 +350,20 @@ class ClaimVerifier:
                         object_entity=object_entity,
                         supporting_evidence=[f"{rel}: {profile.entity.label}"],
                     )
+
+        # Check anchor layer for geographic connections
+        anchors = self.store.get_entity_anchors(subject.entity.id)
+        for anchor_id, label, category, weight in anchors:
+            if category == "GEOGRAPHY" and object_str.lower() in label.lower():
+                return VerificationResult(
+                    claim=claim,
+                    status=VerificationStatus.PLAUSIBLE,
+                    claim_type=ClaimType.LOCATION,
+                    confidence=0.6,
+                    subject_entity=subject,
+                    object_entity=object_entity,
+                    supporting_evidence=[f"Geographic anchor: {label}"],
+                )
 
         return VerificationResult(
             claim=claim,
@@ -370,21 +380,36 @@ class ClaimVerifier:
         subject: EntityProfile,
         property_str: str
     ) -> VerificationResult:
-        """Verify property claims (X is a Y)."""
-        # Check TAXONOMIC position
-        tax_pos = subject.get_position(GroundingDimension.TAXONOMIC)
+        """
+        Verify property claims (X is a Y) using TAXONOMIC hierarchy.
 
-        if tax_pos:
-            path_lower = [n.lower() for n in tax_pos.path_nodes]
-            if property_str.lower() in path_lower:
-                return VerificationResult(
-                    claim=claim,
-                    status=VerificationStatus.SUPPORTED,
-                    claim_type=ClaimType.PROPERTY,
-                    confidence=0.9,
-                    subject_entity=subject,
-                    supporting_evidence=[f"TAXONOMIC: {tax_pos.formatted}"],
-                )
+        Uses hierarchical traversal for type checking:
+        - "Albert Einstein is a scientist" -> check TAXONOMIC path
+        - "Paris is a city" -> check TAXONOMIC path
+        """
+        # Use hierarchical navigation for type verification
+        if subject.is_descendant_of(property_str, GroundingDimension.TAXONOMIC):
+            tax_path = subject.navigate_from_zero(GroundingDimension.TAXONOMIC)
+            return VerificationResult(
+                claim=claim,
+                status=VerificationStatus.SUPPORTED,
+                claim_type=ClaimType.PROPERTY,
+                confidence=0.9,
+                subject_entity=subject,
+                supporting_evidence=[f"TAXONOMIC hierarchy: {' > '.join(tax_path)}"],
+            )
+
+        # Check DOMAIN dimension for field-related claims
+        if subject.is_descendant_of(property_str, GroundingDimension.DOMAIN):
+            domain_path = subject.navigate_from_zero(GroundingDimension.DOMAIN)
+            return VerificationResult(
+                claim=claim,
+                status=VerificationStatus.SUPPORTED,
+                claim_type=ClaimType.PROPERTY,
+                confidence=0.85,
+                subject_entity=subject,
+                supporting_evidence=[f"DOMAIN hierarchy: {' > '.join(domain_path)}"],
+            )
 
         # Check description
         if subject.entity.description:
@@ -408,6 +433,19 @@ class ClaimVerifier:
                     confidence=0.75,
                     subject_entity=subject,
                     supporting_evidence=[f"{key}: {value}"],
+                )
+
+        # Check anchor layer for KNOWN_FOR associations
+        anchors = self.store.get_entity_anchors(subject.entity.id)
+        for anchor_id, label, category, weight in anchors:
+            if category == "KNOWN_FOR" and property_str.lower() in label.lower():
+                return VerificationResult(
+                    claim=claim,
+                    status=VerificationStatus.PLAUSIBLE,
+                    claim_type=ClaimType.PROPERTY,
+                    confidence=0.65,
+                    subject_entity=subject,
+                    supporting_evidence=[f"Known for: {label}"],
                 )
 
         return VerificationResult(

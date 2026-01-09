@@ -1,41 +1,69 @@
-# sparse-wiki-grounding
+# Sparse Wikipedia World Ontology
 
-**Interpretable knowledge grounding for LLM hallucination detection.**
+**Interpretable, navigable knowledge grounding for AI systems.**
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 ---
 
-## Key Results
+## Overview
 
-| Metric | Value |
-|--------|-------|
-| **Accuracy** | 100% on verifiable claims |
-| **Throughput** | ~2,600 claims/second |
-| **Latency** | 0.39ms per claim |
-| **Geographic Detection** | 100% (catches "Eiffel Tower in London") |
-| **Entity Swap Detection** | 100% (catches "Edison invented telephone") |
+This project implements a **sparse navigational scaffold** for grounding entities in multi-dimensional semantic space. Unlike dense embedding spaces that are opaque and difficult to interpret, this system positions entities along explicit hierarchical dimensions that can be traversed, compared, and reasoned about.
 
-**Most Interesting Finding**: The system detects *entity swap hallucinations*—a common LLM failure mode where semantically related entities are confused (e.g., attributing Bell's invention to Edison). This is hard to catch with embedding similarity since the entities are legitimately related.
+**Key Insight**: Rather than treating world knowledge as a black-box embedding, we structure it as a collection of **signed vector positions** across five interpretable dimensions, connected by a **dictionary-encoded anchor layer** for cross-node semantic connectivity.
 
 ---
 
-## Why This Matters for AI Safety
+## Architecture
 
-LLMs frequently hallucinate facts about entities—claiming people hold positions they don't, attributing discoveries to the wrong scientist, or placing landmarks in wrong cities. Current detection methods have limitations:
+### Multi-Dimensional Faceted Classification
 
-| Approach | Limitation |
-|----------|------------|
-| **Black-box embeddings** | Can't explain *why* a claim is wrong |
-| **RAG retrieval** | Misses semantic relations; depends on exact keyword match |
-| **Confidence scores** | Unreliable for factual claims; high confidence hallucinations |
+Inspired by Ranganathan's Colon Classification, each entity is positioned in 5 orthogonal dimension trees:
 
-**This framework offers something different**: entities are positioned in interpretable coordinate spaces (geographic hierarchy, taxonomic type, temporal era), enabling:
+| Dimension | Zero State | What It Captures |
+|-----------|------------|------------------|
+| **SPATIAL** | Earth | Geographic hierarchy (Earth > Europe > France > Paris) |
+| **TEMPORAL** | Present | Time position relative to now |
+| **TAXONOMIC** | Thing | Type hierarchy (Thing > Person > Scientist > Physicist) |
+| **SCALE** | Regional | Geographic scope (Local > National > International) |
+| **DOMAIN** | Knowledge | Knowledge field (Knowledge > Science > Physics) |
 
-1. **Transparent verification** - You can see exactly why "Eiffel Tower is in London" is wrong: the SPATIAL path shows `Earth > Europe > France > Paris > Eiffel Tower`
-2. **Automatic corrections** - Not just detection; provides the correct fact
-3. **Real-time checking** - 0.39ms per claim enables verification during generation
+### Signed Vectors from Zero State
+
+Each entity's position in a dimension is represented as a **signed distance from the zero state**:
+
+```
+Position = (sign, depth, path_nodes, zero_state)
+
+Examples:
+  Paris (SPATIAL):    +3:SPATIAL/Earth/Europe/France/Paris
+  Europe (SPATIAL):   +1:SPATIAL/Earth/Europe
+  Earth (SPATIAL):    0:SPATIAL/Earth  (at zero state)
+
+  sign = +1: More specific than zero
+  sign = -1: More abstract than zero
+  sign = 0:  At zero state
+```
+
+This enables **directional navigation**: you can walk from any entity toward the zero state to generalize, or away from it to specialize.
+
+### Cross-Node Anchor Layer
+
+Beyond direct entity links, entities are connected through a **dictionary-encoded anchor layer**:
+
+```
+anchor_dictionary: {anchor_id, label, category}
+entity_anchors:    {entity_id, anchor_id, weight}
+```
+
+**Anchor categories** (semantic banks):
+- **SCOPE**: General topical associations
+- **HISTORY**: Historical/temporal connections
+- **KNOWN_FOR**: Notable achievements/attributes
+- **GEOGRAPHY**: Geographic associations
+
+This layer enables **spreading activation across semantically related entities** even when they don't have direct links.
 
 ---
 
@@ -46,198 +74,247 @@ git clone https://github.com/rohan-vinaik/sparse-wiki-grounding
 cd sparse-wiki-grounding
 pip install -e .
 
-# Try the demos
+# Build the demo database (requires source data)
+python scripts/build_demo_db.py
+
+# Run demos
 PYTHONPATH=src python examples/quickstart.py
-PYTHONPATH=src python examples/hallucination_detection.py
-PYTHONPATH=src python examples/explore_entity.py "Marie Curie"
+PYTHONPATH=src python examples/explore_entity.py "Albert Einstein"
 ```
 
 ---
 
-## Demo: Catching LLM Hallucinations
+## Demo Output
+
+```
+======================================================================
+SPARSE WIKI GROUNDING - World Ontology Demo
+======================================================================
+
+Database Statistics:
+  Entities:          10,082
+  Entity links:      38,941
+  Anchor dictionary: 15,433
+  Anchor links:      202,052 (cross-node connectivity)
+
+Zero States (Dimension Roots):
+  DOMAIN     -> Knowledge
+  SCALE      -> Regional
+  SPATIAL    -> Earth
+  TAXONOMIC  -> Thing
+  TEMPORAL   -> Present
+
+======================================================================
+ENTITY EXPLORATION
+======================================================================
+
+Albert Einstein (Q_Albert_Einstein)
+----------------------------------------
+  Dimensions:
+    TEMPORAL   [+0:0] Present
+    TAXONOMIC  [+0:0] Thing
+    SCALE      [+1:1] Regional > National
+    DOMAIN     [+0:0] Knowledge
+  EPA: E=+0 P=+0 A=+0
+  Anchors:
+    KNOWN_FOR: Calculus
+    SCOPE: Matter, Philosophy, Physics, ...
+
+======================================================================
+SPREADING ACTIVATION (with anchor layer)
+======================================================================
+
+Spreading from: Albert Einstein
+Activated 50 entities in 80.3ms
+
+Top activated entities:
+  History of philosophy   (act=0.648) via anchor:Philosophy
+  Gas                     (act=0.600) via anchor:Matter
+  Game theory             (act=0.420) via anchor:Philosophy
+```
+
+---
+
+## Key Operations
+
+### Hierarchical Navigation
 
 ```python
-from wiki_grounding import EntityStore, ClaimVerifier
+from wiki_grounding import EntityStore
+from wiki_grounding.entity import GroundingDimension
 
 store = EntityStore("data/entities_demo.db")
-verifier = ClaimVerifier(store)
+paris = store.search("Paris")[0]
 
-# TRUE: Verified against stored knowledge
-result = verifier.verify("Marie Curie discovered radioactivity")
-# [VERIFIED] confidence=0.90
+# Navigate from Paris toward zero state (Earth)
+path = paris.navigate_toward_zero(GroundingDimension.SPATIAL)
+# ["Paris", "France", "Europe", "Earth"]
 
-# FALSE: Entity swap detected - Edison didn't invent the telephone
-result = verifier.verify("Thomas Edison invented the telephone")
-# [FALSE] Correction: the telephone was invented by Alexander Graham Bell
+# Check hierarchical relationship
+paris.is_descendant_of("Europe", GroundingDimension.SPATIAL)  # True
+paris.is_descendant_of("Asia", GroundingDimension.SPATIAL)    # False
 
-# FALSE: Geographic error caught via SPATIAL hierarchy
-result = verifier.verify("The Eiffel Tower is in London")
-# [FALSE] Correction: Eiffel Tower is located in France/Paris/Eiffel Tower
+# Find common ancestor
+london = store.search("London")[0]
+ancestor = paris.shared_ancestor(london, GroundingDimension.SPATIAL)
+# "Europe"
+
+# Compute hierarchical distance
+distance = paris.hierarchical_distance(london, GroundingDimension.SPATIAL)
 ```
 
-### Sample Output
+### Anchor-Based Spreading Activation
 
+```python
+from wiki_grounding import SpreadingActivation
+
+spreader = SpreadingActivation(store)
+
+# Spread through both entity links AND anchor layer
+results = spreader.spread("Q_Physics", use_anchors=True)
+
+for result in results[:5]:
+    print(f"{result.entity.entity.label}: {result.activation:.3f}")
+    # Bank-specific activations
+    print(f"  Banks: {result.bank_activations}")
+
+# Find entities connected through shared anchors
+neighbors = spreader.get_anchor_neighbors("Q_Physics", category="SCOPE")
 ```
-=================================================================
-SPARSE WIKI GROUNDING - Claim Verification Demo
-=================================================================
-Database: 1,117 entities, 5,922 relations
 
-[VERIFIED]  Paris is in France
-            [1.7ms, confidence=0.95]
+### Signed Position Vector
 
-[VERIFIED]  Albert Einstein created the theory of relativity
-            [0.7ms, confidence=0.90]
-
-[FALSE]     The Eiffel Tower is in London
-            -> Eiffel Tower is located in France/Paris/Eiffel Tower
-            [0.3ms, confidence=0.70]
-
-[FALSE]     Thomas Edison invented the telephone
-            -> the telephone was invented by Alexander Graham Bell
-            [0.5ms, confidence=0.85]
+```python
+# Get entity's position across all dimensions
+pos_vector = entity.position_vector()
+# {"SPATIAL": 3, "TEMPORAL": 0, "TAXONOMIC": 2, "SCALE": 1, "DOMAIN": 0}
 ```
 
 ---
 
-## How It Works: Multi-Dimensional Grounding
+## Database Schema
 
-Each entity is positioned in 5 interpretable dimension trees:
+```sql
+-- Core entity table
+CREATE TABLE entities (
+    id TEXT PRIMARY KEY,        -- Wikidata Q-number
+    label TEXT NOT NULL,
+    description TEXT,
+    vital_level INTEGER,        -- 1-5 importance level
+    pagerank REAL
+);
 
-| Dimension | What It Captures | Example (Eiffel Tower) |
-|-----------|------------------|------------------------|
-| **SPATIAL** | Geographic hierarchy | Earth > Europe > France > Paris > Eiffel Tower |
-| **TEMPORAL** | Time period | Present |
-| **TAXONOMIC** | Type hierarchy | Thing > Structure > Landmark |
-| **SCALE** | Geographic scope | Regional > National |
-| **DOMAIN** | Knowledge area | Knowledge > Geography |
+-- Hierarchical dimension positions
+CREATE TABLE dimension_positions (
+    entity_id TEXT NOT NULL,
+    dimension TEXT NOT NULL,    -- SPATIAL, TEMPORAL, TAXONOMIC, SCALE, DOMAIN
+    path_sign INTEGER NOT NULL, -- +1 (specific), -1 (abstract), 0 (at zero)
+    path_depth INTEGER NOT NULL,
+    path_nodes TEXT NOT NULL,   -- JSON array
+    zero_state TEXT NOT NULL
+);
 
-### Why Hierarchies Beat Embeddings
+-- Zero states (dimension roots)
+CREATE TABLE zero_states (
+    dimension TEXT PRIMARY KEY,
+    zero_node TEXT NOT NULL     -- "Earth", "Present", "Thing", etc.
+);
 
-When you claim "The Eiffel Tower is in London", the system:
+-- Cross-node anchor layer
+CREATE TABLE anchor_dictionary (
+    anchor_id INTEGER PRIMARY KEY,
+    label TEXT UNIQUE NOT NULL,
+    category TEXT               -- SCOPE, HISTORY, KNOWN_FOR, GEOGRAPHY
+);
 
-1. Looks up Eiffel Tower's SPATIAL position: `["Earth", "Europe", "France", "Paris", "Eiffel Tower"]`
-2. Checks if "London" appears anywhere in this path
-3. It doesn't → **CONTRADICTED**
-4. Returns correction with actual path
+CREATE TABLE entity_anchors (
+    entity_id TEXT NOT NULL,
+    anchor_id INTEGER NOT NULL,
+    weight REAL DEFAULT 1.0
+);
 
-This is **transparent and auditable**—you can see exactly why the claim failed.
+-- EPA semantic differential
+CREATE TABLE epa_values (
+    entity_id TEXT PRIMARY KEY,
+    evaluation INTEGER,         -- -1/0/+1
+    potency INTEGER,
+    activity INTEGER,
+    confidence REAL
+);
+```
 
 ---
 
-## Benchmark: Hallucination Detection
+## Relevance to AI Safety
 
-We test on 34 claims across 4 categories with known ground truth:
+### Interpretable Grounding
 
-### Results by Category
+Unlike black-box embeddings, this system provides **transparent paths** for any grounding decision:
 
-| Category | Accuracy | What It Tests |
-|----------|----------|---------------|
-| **Geographic** | 100% | "Paris is in Germany" → FALSE |
-| **Attribution** | 100% | "Einstein invented light bulb" → FALSE |
-| **Property** | 100% | "Berlin is capital of France" → FALSE |
+- **Why is Paris in France?** Path: `Earth > Europe > France > Paris`
+- **How is Einstein related to Physics?** Anchor: `SCOPE:Physics` with weight 0.9
 
-### Key Capabilities Demonstrated
+### OOV (Out-of-Vocabulary) Handling
 
-**1. Entity Swap Detection**
-```
-Claim: "Thomas Edison invented the telephone"
-Result: FALSE
-Correction: "the telephone was invented by Alexander Graham Bell"
-```
-LLMs often confuse related inventors. The grounding catches this.
+When encountering unknown terms, the hierarchical structure enables **graceful degradation**:
 
-**2. Geographic Hierarchy Verification**
-```
-Claim: "The Colosseum is in Paris"
-Result: FALSE
-Evidence: SPATIAL path shows Earth > Europe > Italy > Rome > Colosseum
+1. Try exact match in entity store
+2. Fall back to anchor-based semantic similarity
+3. Navigate up dimension trees to find related concepts
+
+### Verifiable Claims
+
+The hierarchical structure enables systematic claim verification:
+
+```python
+# "The Eiffel Tower is in London" -> Check SPATIAL path
+# Path shows: Earth > Europe > France > Paris > Eiffel Tower
+# "London" not in path -> CONTRADICTED
 ```
 
-**3. Transparent Corrections**
-Every contradiction comes with:
-- The evidence that disproved it
-- The correct information
-- Confidence score
+### Cross-Node Semantic Discovery
+
+The anchor layer enables discovery of **implicit relationships**:
+
+- Entities sharing anchors are semantically related
+- Anchor categories provide typed semantic connections
+- Spreading activation reveals contextually relevant entities
 
 ---
 
-## Data Coverage
+## Theoretical Foundations
+
+This work draws on several established frameworks:
+
+- **Collins & Loftus (1975)**: Spreading activation theory
+- **Ranganathan's Colon Classification**: Multi-dimensional faceted classification
+- **Osgood's Semantic Differential (1957)**: EPA (Evaluation-Potency-Activity) dimensions
+- **Wierzbicka's Natural Semantic Metalanguage**: Semantic primitives and decomposition
+
+---
+
+## Data Coverage (Demo Database)
 
 | Metric | Value |
 |--------|-------|
-| Entities | 1,117 |
-| Relations | 5,922 |
-| Relation Types | 39 |
-| SPATIAL positions | 86 |
-| EPA values | 1,117 |
-| Database size | 1.2 MB |
-
-### Notable Entities Include
-
-**Scientists**: Einstein, Marie Curie, Newton, Darwin, Hawking, Feynman, Turing
-**Artists**: Da Vinci, Michelangelo, Van Gogh, Picasso, Shakespeare, Beethoven
-**Landmarks**: Eiffel Tower, Colosseum, Taj Mahal, Great Wall, Statue of Liberty
-**Historical**: Napoleon, Caesar, Cleopatra, Lincoln, Churchill, Gandhi
-**Tech**: Steve Jobs, Bill Gates, Tim Berners-Lee, Alan Turing
-
----
-
-## Architecture
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                         Claim Verifier                          │
-│  Input: "The Eiffel Tower is in London"                         │
-├─────────────────────────────────────────────────────────────────┤
-│  1. PARSE      → subject: "Eiffel Tower"                        │
-│                  relation: "located_in"                         │
-│                  object: "London"                               │
-├─────────────────────────────────────────────────────────────────┤
-│  2. GROUND     → Eiffel Tower → Q_Eiffel_Tower                  │
-│                  London → Q_London                              │
-├─────────────────────────────────────────────────────────────────┤
-│  3. VERIFY     → Check SPATIAL: ["Earth","Europe","France",     │
-│                                  "Paris","Eiffel Tower"]        │
-│                  "London" not in path → CONTRADICTED            │
-├─────────────────────────────────────────────────────────────────┤
-│  4. CORRECT    → "Eiffel Tower is located in France/Paris"      │
-└─────────────────────────────────────────────────────────────────┘
-```
-
----
-
-## Use Cases for LLM Safety
-
-| Use Case | How It Helps |
-|----------|--------------|
-| **Real-time verification** | 0.39ms latency enables checking during generation |
-| **RAG augmentation** | Add as verification layer after retrieval |
-| **Training data curation** | Filter hallucinated facts from training sets |
-| **Human-in-the-loop** | Flag unverifiable claims for human review |
-| **Explainable AI** | Transparent evidence paths for each decision |
-
----
-
-## Comparison to Other Approaches
-
-| Approach | Interpretable | Corrections | Real-time | Entity Swaps |
-|----------|--------------|-------------|-----------|--------------|
-| This framework | Yes | Yes | Yes | Yes |
-| Embedding similarity | No | No | Yes | No |
-| RAG + reranking | Partial | No | Slower | Partial |
-| LLM self-verification | No | Partial | No | No |
-
----
-
-## References
-
-- Osgood, C. E., Suci, G. J., & Tannenbaum, P. H. (1957). *The Measurement of Meaning*
-- Collins, A. M., & Loftus, E. F. (1975). A spreading-activation theory of semantic processing
-- Wierzbicka, A. (1996). *Semantics: Primes and Universals*
+| Entities | 10,082 |
+| Dimension Positions | 40,335 |
+| Entity Links | 38,941 |
+| Anchor Dictionary | 15,433 |
+| Entity-Anchor Links | 202,052 |
+| Zero States | 5 |
 
 ---
 
 ## License
 
 MIT
+
+---
+
+## References
+
+- Collins, A. M., & Loftus, E. F. (1975). A spreading-activation theory of semantic processing. *Psychological Review*, 82(6), 407-428.
+- Osgood, C. E., Suci, G. J., & Tannenbaum, P. H. (1957). *The Measurement of Meaning*.
+- Ranganathan, S. R. (1962). *Elements of Library Classification*.
+- Wierzbicka, A. (1996). *Semantics: Primes and Universals*.

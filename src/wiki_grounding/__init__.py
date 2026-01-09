@@ -34,6 +34,8 @@ from .spreading import (
     SpreadingActivation,
     SpreadingConfig,
     ActivationResult,
+    SemanticBank,
+    ANCHOR_TO_BANK,
 )
 
 from .verifier import (
@@ -64,6 +66,8 @@ __all__ = [
     "SpreadingActivation",
     "SpreadingConfig",
     "ActivationResult",
+    "SemanticBank",
+    "ANCHOR_TO_BANK",
     # Verification
     "ClaimVerifier",
     "VerificationResult",
