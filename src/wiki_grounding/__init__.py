@@ -52,6 +52,12 @@ from .epa import (
     PRIMITIVE_TO_EPA,
 )
 
+from .context_grounder import (
+    ContextGrounder,
+    GroundingContext,
+    DisambiguationResult,
+)
+
 __all__ = [
     # Core entities
     "Entity",
@@ -78,4 +84,8 @@ __all__ = [
     "epa_similarity",
     "epa_compatible",
     "PRIMITIVE_TO_EPA",
+    # Context-aware disambiguation
+    "ContextGrounder",
+    "GroundingContext",
+    "DisambiguationResult",
 ]

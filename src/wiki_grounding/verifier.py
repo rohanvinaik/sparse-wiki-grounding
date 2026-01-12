@@ -33,9 +33,19 @@ class ClaimType(str, Enum):
     RELATION = "relation"         # "X is related to Y"
 
 
+# Confidence threshold for returning SUPPORTED/CONTRADICTED
+# Below this, return UNVERIFIABLE to avoid false positives
+VERIFICATION_CONFIDENCE_THRESHOLD = 0.6
+
+
 @dataclass
 class VerificationResult:
-    """Result of verifying a claim."""
+    """Result of verifying a claim.
+
+    Includes confidence metrics for graceful abstention - when confidence
+    is below threshold, returns UNVERIFIABLE rather than making a potentially
+    wrong judgment (zero false positive principle).
+    """
     claim: str
     status: VerificationStatus
     claim_type: Optional[ClaimType] = None
@@ -52,6 +62,26 @@ class VerificationResult:
     # For contradictions: what the correct information is
     correction: Optional[str] = None
 
+    # Abstention reason (if confidence below threshold)
+    abstention_reason: Optional[str] = None
+
+    @property
+    def is_confident(self) -> bool:
+        """Whether confidence is high enough to trust the verdict."""
+        return self.confidence >= VERIFICATION_CONFIDENCE_THRESHOLD
+
+    @property
+    def effective_status(self) -> VerificationStatus:
+        """Status accounting for confidence threshold.
+
+        Returns UNVERIFIABLE if confidence is below threshold,
+        even if internal status is SUPPORTED/CONTRADICTED.
+        """
+        if self.status in (VerificationStatus.SUPPORTED, VerificationStatus.CONTRADICTED):
+            if not self.is_confident:
+                return VerificationStatus.UNVERIFIABLE
+        return self.status
+
     def __str__(self) -> str:
         status_emoji = {
             VerificationStatus.SUPPORTED: "✓",
@@ -59,7 +89,9 @@ class VerificationResult:
             VerificationStatus.UNVERIFIABLE: "?",
             VerificationStatus.PLAUSIBLE: "~",
         }
-        return f"[{status_emoji[self.status]}] {self.claim} ({self.confidence:.2f})"
+        effective = self.effective_status
+        conf_str = f" (conf={self.confidence:.2f})" if not self.is_confident else ""
+        return f"[{status_emoji[effective]}] {self.claim}{conf_str}"
 
 
 # Relation patterns for claim parsing
@@ -93,6 +125,17 @@ CLAIM_TO_RELATIONS = {
     "capital": ["capital_of", "AtLocation", "PartOf"],
     "located": ["located_in", "part_of", "AtLocation", "PartOf"],
 }
+
+# Location relation patterns - check for these in normalized relation names
+LOCATION_RELATIONS = {"atlocation", "partof", "locatedin", "isin", "part_of", "located_in", "in"}
+
+
+def normalize_relation(rel: str) -> str:
+    """Normalize a relation name for comparison.
+
+    Handles CamelCase (AtLocation -> atlocation), underscores, etc.
+    """
+    return rel.lower().replace("_", "").replace("-", "").replace(" ", "")
 
 
 class ClaimVerifier:
@@ -238,12 +281,21 @@ class ClaimVerifier:
         # Get relations from subject
         related = self.store.get_related(subject.entity.id, limit=100)
 
-        # Check for matching relation
+        # Check for matching relation - use normalized versions for comparison
         relation_types = CLAIM_TO_RELATIONS.get(relation.lower(), [relation.lower()])
+        # Normalize all relation types for comparison
+        normalized_types = {normalize_relation(rt) for rt in relation_types}
 
         supporting = []
         for profile, rel, weight in related:
-            if any(rt in rel.lower() for rt in relation_types):
+            # Use normalized matching for CamelCase relations
+            normalized_rel = normalize_relation(rel)
+            matches_relation = (
+                normalized_rel in normalized_types or
+                any(rt in rel.lower() for rt in relation_types) or
+                normalized_rel == "relatedto"  # RelatedTo is a generic fallback
+            )
+            if matches_relation:
                 # Check if object matches
                 if object_entity and profile.entity.id == object_entity.entity.id:
                     supporting.append(f"{rel}: {profile.entity.label}")
@@ -267,18 +319,23 @@ class ClaimVerifier:
                 object_entity.entity.id, direction="incoming", limit=50
             )
             for profile, rel, weight in object_related:
-                if any(rt in rel.lower() for rt in relation_types):
-                    if profile.entity.id != subject.entity.id:
-                        return VerificationResult(
-                            claim=claim,
-                            status=VerificationStatus.CONTRADICTED,
-                            claim_type=ClaimType.ATTRIBUTION,
-                            confidence=0.85,
-                            subject_entity=subject,
-                            object_entity=object_entity,
-                            contradicting_evidence=[f"{rel}: {profile.entity.label}"],
-                            correction=f"{object_str} was {relation} by {profile.entity.label}",
-                        )
+                # Use same normalized matching for contradiction detection
+                normalized_rel = normalize_relation(rel)
+                matches_relation = (
+                    normalized_rel in normalized_types or
+                    any(rt in rel.lower() for rt in relation_types)
+                )
+                if matches_relation and profile.entity.id != subject.entity.id:
+                    return VerificationResult(
+                        claim=claim,
+                        status=VerificationStatus.CONTRADICTED,
+                        claim_type=ClaimType.ATTRIBUTION,
+                        confidence=0.85,
+                        subject_entity=subject,
+                        object_entity=object_entity,
+                        contradicting_evidence=[f"{rel}: {profile.entity.label}"],
+                        correction=f"{object_str} was {relation} by {profile.entity.label}",
+                    )
 
         # Can't verify either way
         return VerificationResult(
@@ -339,7 +396,11 @@ class ClaimVerifier:
         # No spatial info - check entity relations
         related = self.store.get_related(subject.entity.id, limit=50)
         for profile, rel, weight in related:
-            if "located" in rel.lower() or "part_of" in rel.lower():
+            # Use normalized relation matching for CamelCase relations (AtLocation, PartOf, etc.)
+            normalized_rel = normalize_relation(rel)
+            is_location_rel = normalized_rel in LOCATION_RELATIONS
+            if is_location_rel:
+                # Check if the related entity matches the claimed location
                 if object_str.lower() in profile.entity.label.lower():
                     return VerificationResult(
                         claim=claim,
@@ -349,6 +410,17 @@ class ClaimVerifier:
                         subject_entity=subject,
                         object_entity=object_entity,
                         supporting_evidence=[f"{rel}: {profile.entity.label}"],
+                    )
+                # Also check if grounded object entity matches
+                if object_entity and profile.entity.id == object_entity.entity.id:
+                    return VerificationResult(
+                        claim=claim,
+                        status=VerificationStatus.SUPPORTED,
+                        claim_type=ClaimType.LOCATION,
+                        confidence=0.85,
+                        subject_entity=subject,
+                        object_entity=object_entity,
+                        supporting_evidence=[f"{rel}: {profile.entity.label} (exact match)"],
                     )
 
         # Check anchor layer for geographic connections
